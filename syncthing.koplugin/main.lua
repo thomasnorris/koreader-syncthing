@@ -37,14 +37,10 @@ local device_id_path = "settings/syncthing/device-id"
 function Syncthing:init()
     self.syncthing_port = G_reader_settings:readSetting("syncthing_port") or "8384"
     self.ui.menu:registerToMainMenu(self)
-    self:onDispatcherRegisterActions()
 
     self.can_run_while_charging = G_reader_settings:readSetting("can_run_while_charging") or false
     self.can_stop_after_charging = G_reader_settings:readSetting("can_stop_after_charging") or false
-    self.can_turn_on_wifi = G_reader_settings:readSetting("can_turn_on_wifi") or false
-    self.can_turn_off_wifi = G_reader_settings:readSetting("can_turn_off_wifi") or false
 
-    self.on_charging_triggered = false;
     self:registerEventHandlers()
 end
 
@@ -136,7 +132,7 @@ function Syncthing:stop()
     end
 end
 
-function Syncthing:onToggleSyncthingServer()
+function Syncthing:toggleSyncthingServer()
     if self:isRunning() then
         self:stop()
     else
@@ -494,7 +490,7 @@ function Syncthing:addToMainMenu(menu_items)
                 keep_menu_open = true,
                 checked_func = function() return self:isRunning() end,
                 callback = function(touchmenu_instance)
-                    self:onToggleSyncthingServer()
+                    self:toggleSyncthingServer()
                     touchmenu_instance:updateItems()
                 end,
             },
@@ -575,33 +571,11 @@ function Syncthing:addToMainMenu(menu_items)
             {
                 text = _("Stop after charging"),
                 keep_menu_open = true,
+                separator = true,
                 checked_func = function() return self.can_stop_after_charging end,
                 callback = function(touchmenu_instance)
                     self.can_stop_after_charging = not self.can_stop_after_charging
                     G_reader_settings:saveSetting("can_stop_after_charging", self.can_stop_after_charging)
-
-                    touchmenu_instance:updateItems()
-                end,
-            },
-            {
-                text = _("Enable wifi if disabled"),
-                keep_menu_open = true,
-                checked_func = function() return self.can_turn_on_wifi end,
-                callback = function(touchmenu_instance)
-                    self.can_turn_on_wifi = not self.can_turn_on_wifi
-                    G_reader_settings:saveSetting("can_turn_on_wifi", self.can_turn_on_wifi)
-
-                    touchmenu_instance:updateItems()
-                end,
-            },
-            {
-                text = _("Disable wifi if previously enabled"),
-                keep_menu_open = true,
-                separator = true,
-                checked_func = function() return self.can_turn_off_wifi end,
-                callback = function(touchmenu_instance)
-                    self.can_turn_off_wifi = not self.can_turn_off_wifi
-                    G_reader_settings:saveSetting("can_turn_off_wifi", self.can_stop_after_charging)
 
                     touchmenu_instance:updateItems()
                 end,
@@ -658,50 +632,20 @@ function Syncthing:addToMainMenu(menu_items)
     }
 end
 
-function Syncthing:onDispatcherRegisterActions()
-    Dispatcher:registerAction("toggle_syncthing_server", { category = "none", event = "ToggleSyncthingServer", title = _("Toggle Syncthing"), general=true})
-end
-
 function Syncthing:registerEventHandlers()
     -- when device is charging
     function Syncthing:onCharging()
-        -- if we are enabled, not already running, not already triggered
-        if self.can_run_while_charging and not self:isRunning() and not self.on_charging_triggered then
-            self.on_charging_triggered = true
-
-            -- if we are connected to wifi, start
-            if NetworkManager:isConnected() then
-                self:start()
-            else
-                -- if we can turn wifi on, do it, then connect
-                if self.can_turn_on_wifi then
-                    NetworkManager:turnOnWifi(function()
-                        NetworkManager:connectivityCheck(1)
-                    end)
-                end
-            end
+        -- if we are enabled, not running, and connected to wifi, start
+        if self.can_run_while_charging and not self:isRunning() and NetworkManager:isConnected() then
+            self:start()
         end
     end
 
     -- when device is not charging
     function Syncthing:onNotCharging()
-        -- if we are enabled and we are running
+        -- if we are enabled and running, stop (don't check wifi in case it was disconnected)
         if self.can_stop_after_charging and self:isRunning() then
             self:stop()
-
-            -- if we can turn off the wifi, do it
-            if self.can_turn_off_wifi then
-                NetworkManager:turnOffWifi(function() end)
-            end
-        end
-    end
-
-    -- when the network has been connected
-    function Syncthing:onNetworkConnected()
-        -- if we have had our charging trigger
-        if self.on_charging_triggered then
-            self.on_charging_triggered = false
-            self:start()
         end
     end
 end
