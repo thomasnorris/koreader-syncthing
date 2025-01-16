@@ -33,10 +33,16 @@ local pid_path = "/tmp/syncthing_koreader.pid"
 local config_path = "settings/syncthing/config.xml"
 local device_id_path = "settings/syncthing/device-id"
 
+local stop_after_charging = false
+
 function Syncthing:init()
     self.syncthing_port = G_reader_settings:readSetting("syncthing_port") or "8384"
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
+
+    self.run_while_charging = G_reader_settings:readSetting("run_while_charging") or false
+    self.stop_after_charging = G_reader_settings:readSetting("stop_after_charging") or false
+    self:registerEventHandlers()
 end
 
 function Syncthing:start(password)
@@ -553,6 +559,29 @@ function Syncthing:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("Auto-Run While Charging"),
+                keep_menu_open = true,
+                checked_func = function() return self.run_while_charging end,
+                callback = function(touchmenu_instance)
+                    self.run_while_charging = not self.run_while_charging
+                    G_reader_settings:saveSetting("run_while_charging", self.run_while_charging)
+
+                    touchmenu_instance:updateItems()
+                end,
+            },
+            {
+                text = _("Auto-Stop After Charging"),
+                keep_menu_open = true,
+                separator = true,
+                checked_func = function() return self.stop_after_charging end,
+                callback = function(touchmenu_instance)
+                    self.stop_after_charging = not self.stop_after_charging
+                    G_reader_settings:saveSetting("stop_after_charging", self.stop_after_charging)
+
+                    touchmenu_instance:updateItems()
+                end,
+            },
+            {
                 text_func = function()
                     local device_id = self:getDeviceId()
                     return T(_("Device ID: %1"), device_id or "Unknown")
@@ -606,6 +635,20 @@ end
 
 function Syncthing:onDispatcherRegisterActions()
     Dispatcher:registerAction("toggle_syncthing_server", { category = "none", event = "ToggleSyncthingServer", title = _("Toggle Syncthing"), general=true})
+end
+
+function Syncthing:registerEventHandlers()
+    function Syncthing:onCharging()
+        if self.run_while_charging and not self:isRunning() then
+            self:start()
+        end
+    end
+
+    function Syncthing:onNotCharging()
+        if self.stop_after_charging and self:isRunning() then
+            self:stop()
+        end
+    end
 end
 
 require("insert_menu")
