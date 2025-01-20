@@ -3,6 +3,7 @@ local Device =  require("device")
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")  -- luacheck:ignore
 local NetworkManager = require("ui/network/manager")
+local Notification = require("ui/widget/notification")
 local QRMessage = require("ui/widget/qrmessage")
 local InputDialog = require("ui/widget/inputdialog")
 local UIManager = require("ui/uimanager")
@@ -34,6 +35,10 @@ local pid_path = "/tmp/syncthing_koreader.pid"
 local config_path = "settings/syncthing/config.xml"
 local device_id_path = "settings/syncthing/device-id"
 
+-- how long to auto-stop if triggered by an event
+local event_auto_stop_after_s = 30
+local hide_dialogs = false
+
 function Syncthing:init()
     self.syncthing_port = G_reader_settings:readSetting("syncthing_port") or "8384"
     self.ui.menu:registerToMainMenu(self)
@@ -41,7 +46,10 @@ function Syncthing:init()
     self.can_run_while_charging = G_reader_settings:readSetting("can_run_while_charging") or false
     self.can_stop_after_charging = G_reader_settings:readSetting("can_stop_after_charging") or false
 
-    self:registerEventHandlers()
+    self.can_stop_on_resume = G_reader_settings:readSetting("can_stop_on_resume") or false
+    self.can_run_on_suspend = G_reader_settings:readSetting("can_run_on_suspend") or false
+
+    self.registerEventHandlers()
 end
 
 function Syncthing:start(password)
@@ -63,7 +71,7 @@ function Syncthing:start(password)
                     icon = "notice-warning",
                     text = _("Failed to start Syncthing."),
             }
-            UIManager:show(info)
+            showIfNotHidden(info)
             return
         end
     end
@@ -87,19 +95,19 @@ function Syncthing:start(password)
     logger.dbg("[Syncthing] Launching Syncthing : ", cmd)
     if os.execute(cmd) == 0 then
         local info = InfoMessage:new{
-                timeout = 10,
+                timeout = 5,
                 -- @translators: %1 is the Syncthing port, %2 is the network info.
                 text = T(_("Syncthing started.\n\nSyncthing port: %1\n%2"),
                     self.syncthing_port,
                     Device.retrieveNetworkInfo and Device:retrieveNetworkInfo() or _("Could not retrieve network info.")),
         }
-        UIManager:show(info)
+        showIfNotHidden(info)
     else
         local info = InfoMessage:new{
                 icon = "notice-warning",
                 text = _("Failed to start Syncthing."),
         }
-        UIManager:show(info)
+        showIfNotHidden(info)
     end
 end
 
@@ -109,7 +117,7 @@ end
 
 function Syncthing:stop()
     os.execute("cat "..pid_path.." | xargs kill")
-    UIManager:show(InfoMessage:new {
+    showIfNotHidden(InfoMessage:new {
         text = T(_("Syncthing stopped.")),
         timeout = 2,
     })
@@ -171,7 +179,7 @@ function Syncthing:show_port_dialog(touchmenu_instance)
             },
         },
     }
-    UIManager:show(self.port_dialog)
+    showIfNotHidden(self.port_dialog)
     self.port_dialog:onShowKeyboard()
 end
 
@@ -250,7 +258,7 @@ function Syncthing:apiCall(api_path, method, source)
             icon = "notice-warning",
             text = T(_("Syncthing error (%1)"), status or code),
         }
-        UIManager:show(info)
+        showIfNotHidden(info)
         return nil
     end
     local str = table.concat(sink)
@@ -316,7 +324,7 @@ function Syncthing:getStatusMenu()
                         stat["lastFile"] and stat["lastFile"]["at"] or _("N/A"),
                         table.concat(devices, "\n")),
                 }
-                UIManager:show(info)
+                showIfNotHidden(info)
             end
         })
     end
@@ -357,7 +365,7 @@ function Syncthing:getStatusMenu()
                         completion["need_items"] or _("N/A"),
                         completion["need_bytes"] or _("N/A")),
                 }
-                UIManager:show(info)
+                showIfNotHidden(info)
             end
         })
     end
@@ -411,7 +419,7 @@ function Syncthing:getPendingMenu()
                         },
                     },
                 }
-                UIManager:show(dialog)
+                showIfNotHidden(dialog)
             end
         })
     end
@@ -473,7 +481,7 @@ function Syncthing:getPendingMenu()
                         },
                     },
                 }
-                UIManager:show(dialog)
+                showIfNotHidden(dialog)
             end
         })
     end
@@ -515,7 +523,7 @@ function Syncthing:addToMainMenu(menu_items)
                             self.syncthing_port,
                             Device.retrieveNetworkInfo and Device:retrieveNetworkInfo() or _("Could not retrieve network info.")),
                     }
-                    UIManager:show(info)
+                    showIfNotHidden(info)
                 end,
             },
             {
@@ -554,7 +562,7 @@ function Syncthing:addToMainMenu(menu_items)
                             },
                         },
                     }
-                    UIManager:show(dialog)
+                    showIfNotHidden(dialog)
                 end,
             },
             {
@@ -581,6 +589,43 @@ function Syncthing:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("Run on suspend"),
+                keep_menu_open = true,
+                checked_func = function() return self.can_run_on_suspend end,
+                callback = function(touchmenu_instance)
+                    self.can_run_on_suspend = not self.can_run_on_suspend
+                    G_reader_settings:saveSetting("can_run_on_suspend", self.can_run_on_suspend)
+
+                    touchmenu_instance:updateItems()
+                end,
+            },
+            {
+                text = _("Stop on resume"),
+                keep_menu_open = true,
+                separator = true,
+                checked_func = function() return self.can_stop_on_resume end,
+                callback = function(touchmenu_instance)
+                    self.can_stop_on_resume = not self.can_stop_on_resume
+                    G_reader_settings:saveSetting("can_stop_on_resume", self.can_stop_on_resume)
+
+                    touchmenu_instance:updateItems()
+                end,
+            },
+            {
+                text_func = function()
+                    return T(_("Auto-Stop: %1 Second(s)"), event_auto_stop_after_s)
+                end,
+                keep_menu_open = true,
+                separator = true,
+                callback = function()
+                    local info = InfoMessage:new{
+                        timeout = 60,
+                        text = "If auto-run is enabled, Syncthing will automatically be stopped again after " .. tostring(event_auto_stop_after_s) .. " seconds"
+                    }
+                    showIfNotHidden(info)
+                end,
+            },
+            {
                 text_func = function()
                     local device_id = self:getDeviceId()
                     return T(_("Device ID: %1"), device_id or "Unknown")
@@ -593,7 +638,7 @@ function Syncthing:addToMainMenu(menu_items)
                         timeout = 60,
                         text = device_id or "Unknown"
                     }
-                    UIManager:show(info)
+                    showIfNotHidden(info)
                 end,
             },
             {
@@ -608,7 +653,7 @@ function Syncthing:addToMainMenu(menu_items)
                             width = Device.screen:getWidth(),
                             height = Device.screen:getHeight()
                         }
-                        UIManager:show(info)
+                        showIfNotHidden(info)
                     end
                 end,
             },
@@ -632,20 +677,72 @@ function Syncthing:addToMainMenu(menu_items)
     }
 end
 
+function showIfNotHidden(dialog)
+    if not hide_dialogs then
+        UIManager:show(dialog)
+    end
+end
+
+-- event handler registration
 function Syncthing:registerEventHandlers()
+    local started_message = "Syncthing started"
+    local stopped_message = "Syncthing stopped"
+
+    function uiShow(message)
+        local info = InfoMessage:new{
+            timeout = 1,
+            text = message
+        }
+        UIManager:show(info)
+    end
+
     -- when device is charging
     function Syncthing:onCharging()
-        -- if we are enabled, not running, and connected to wifi, start
         if self.can_run_while_charging and not self:isRunning() and NetworkManager:isConnected() then
+            hide_dialogs = true
             self:start()
+            uiShow(started_message)
+
+            -- UIManager:scheduleIn(event_auto_stop_after_s, function()
+            --     if self.can_stop_on_resume and self:isRunning() then
+            --         self:stop()
+            --     end
+            -- end)
         end
     end
 
     -- when device is not charging
     function Syncthing:onNotCharging()
-        -- if we are enabled and running, stop (don't check wifi in case it was disconnected)
         if self.can_stop_after_charging and self:isRunning() then
             self:stop()
+            hide_dialogs = false
+            uiShow(stopped_message)
+        end
+    end
+
+    -- when device suspending
+    function Syncthing:onSuspend()
+        if self.can_run_on_suspend and not self:isRunning() and NetworkManager:isConnected() then
+            hide_dialogs = true
+            self:start()
+            uiShow(started_message)
+
+            UIManager:scheduleIn(event_auto_stop_after_s, function()
+                if self.can_stop_on_resume and self:isRunning() then
+                    self:stop()
+                    hide_dialogs = false
+                    uiShow(stopped_message)
+                end
+            end)
+        end
+    end
+
+    -- when device is resuming from suspend
+    function Syncthing:onResume()
+        if self.can_stop_on_resume and self:isRunning() then
+            self:stop()
+            hide_dialogs = false
+            uiShow(stopped_message)
         end
     end
 end
