@@ -7,6 +7,7 @@ local Notification = require("ui/widget/notification")
 local QRMessage = require("ui/widget/qrmessage")
 local InputDialog = require("ui/widget/inputdialog")
 local UIManager = require("ui/uimanager")
+local SpinWidget = require("ui/widget/spinwidget")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local ffiutil = require("ffi/util")
 local logger = require("logger")
@@ -35,8 +36,6 @@ local pid_path = "/tmp/syncthing_koreader.pid"
 local config_path = "settings/syncthing/config.xml"
 local device_id_path = "settings/syncthing/device-id"
 
--- how long to auto-stop if triggered by an event
-local event_auto_stop_after_s = 30
 local hide_dialogs = false
 
 function Syncthing:init()
@@ -48,6 +47,8 @@ function Syncthing:init()
 
     self.can_stop_on_resume = G_reader_settings:readSetting("can_stop_on_resume") or false
     self.can_run_on_suspend = G_reader_settings:readSetting("can_run_on_suspend") or false
+
+    self.event_auto_stop_after_s = G_reader_settings:readSetting("event_auto_stop_after_s") or 30
 
     self.registerEventHandlers()
 end
@@ -513,6 +514,13 @@ function Syncthing:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("Auto-run settings"),
+                sub_item_table_func = function()
+                    return self:getAutoRunSubMenuItems()
+                end,
+                separator = true
+            },
+            {
                 text = _("Syncthing Web GUI"),
                 keep_menu_open = true,
                 enabled_func = function() return self:isRunning() end,
@@ -563,66 +571,6 @@ function Syncthing:addToMainMenu(menu_items)
                         },
                     }
                     showIfNotHidden(dialog)
-                end,
-            },
-            {
-                text = _("Run while charging"),
-                keep_menu_open = true,
-                checked_func = function() return self.can_run_while_charging end,
-                callback = function(touchmenu_instance)
-                    self.can_run_while_charging = not self.can_run_while_charging
-                    G_reader_settings:saveSetting("can_run_while_charging", self.can_run_while_charging)
-
-                    touchmenu_instance:updateItems()
-                end,
-            },
-            {
-                text = _("Stop after charging"),
-                keep_menu_open = true,
-                separator = true,
-                checked_func = function() return self.can_stop_after_charging end,
-                callback = function(touchmenu_instance)
-                    self.can_stop_after_charging = not self.can_stop_after_charging
-                    G_reader_settings:saveSetting("can_stop_after_charging", self.can_stop_after_charging)
-
-                    touchmenu_instance:updateItems()
-                end,
-            },
-            {
-                text = _("Run on suspend"),
-                keep_menu_open = true,
-                checked_func = function() return self.can_run_on_suspend end,
-                callback = function(touchmenu_instance)
-                    self.can_run_on_suspend = not self.can_run_on_suspend
-                    G_reader_settings:saveSetting("can_run_on_suspend", self.can_run_on_suspend)
-
-                    touchmenu_instance:updateItems()
-                end,
-            },
-            {
-                text = _("Stop on resume"),
-                keep_menu_open = true,
-                separator = true,
-                checked_func = function() return self.can_stop_on_resume end,
-                callback = function(touchmenu_instance)
-                    self.can_stop_on_resume = not self.can_stop_on_resume
-                    G_reader_settings:saveSetting("can_stop_on_resume", self.can_stop_on_resume)
-
-                    touchmenu_instance:updateItems()
-                end,
-            },
-            {
-                text_func = function()
-                    return T(_("Auto-Stop: %1 Second(s)"), event_auto_stop_after_s)
-                end,
-                keep_menu_open = true,
-                separator = true,
-                callback = function()
-                    local info = InfoMessage:new{
-                        timeout = 60,
-                        text = "If auto-run is enabled, Syncthing will automatically be stopped again after " .. tostring(event_auto_stop_after_s) .. " seconds"
-                    }
-                    showIfNotHidden(info)
                 end,
             },
             {
@@ -677,6 +625,81 @@ function Syncthing:addToMainMenu(menu_items)
     }
 end
 
+function Syncthing:getAutoRunSubMenuItems()
+    return {
+        {
+            text = _("Run while charging"),
+            keep_menu_open = true,
+            checked_func = function() return self.can_run_while_charging end,
+            callback = function(touchmenu_instance)
+                self.can_run_while_charging = not self.can_run_while_charging
+                G_reader_settings:saveSetting("can_run_while_charging", self.can_run_while_charging)
+
+                touchmenu_instance:updateItems()
+            end,
+        },
+        {
+            text = _("Stop after charging"),
+            keep_menu_open = true,
+            separator = true,
+            checked_func = function() return self.can_stop_after_charging end,
+            callback = function(touchmenu_instance)
+                self.can_stop_after_charging = not self.can_stop_after_charging
+                G_reader_settings:saveSetting("can_stop_after_charging", self.can_stop_after_charging)
+
+                touchmenu_instance:updateItems()
+            end,
+        },
+        {
+            text = _("Run on suspend"),
+            keep_menu_open = true,
+            checked_func = function() return self.can_run_on_suspend end,
+            callback = function(touchmenu_instance)
+                self.can_run_on_suspend = not self.can_run_on_suspend
+                G_reader_settings:saveSetting("can_run_on_suspend", self.can_run_on_suspend)
+
+                touchmenu_instance:updateItems()
+            end,
+        },
+        {
+            text = _("Stop on resume"),
+            keep_menu_open = true,
+            separator = true,
+            checked_func = function() return self.can_stop_on_resume end,
+            callback = function(touchmenu_instance)
+                self.can_stop_on_resume = not self.can_stop_on_resume
+                G_reader_settings:saveSetting("can_stop_on_resume", self.can_stop_on_resume)
+
+                touchmenu_instance:updateItems()
+            end,
+        },
+        {
+            text_func = function()
+                return T(_("Auto-stop timer: %1 second(s)"), self.event_auto_stop_after_s)
+            end,
+            keep_menu_open = true,
+            separator = true,
+            callback = function(menu_instance)
+                local spinner = SpinWidget:new {
+                    value = self.event_auto_stop_after_s,
+                    value_min = 10,
+                    value_max = 3600,
+                    value_step = 1,
+                    ok_text = _("Save"),
+                    title_text = _("Set auto-stop timer"),
+                    callback = function(spin)
+                        self.event_auto_stop_after_s = spin.value
+                        G_reader_settings:saveSetting("event_auto_stop_after_s", self.event_auto_stop_after_s)
+
+                        menu_instance:updateItems()
+                    end
+                }
+                showIfNotHidden(spinner)
+            end,
+        },
+    }
+end
+
 function showIfNotHidden(dialog)
     if not hide_dialogs then
         UIManager:show(dialog)
@@ -703,7 +726,7 @@ function Syncthing:registerEventHandlers()
             self:start()
             uiShow(started_message)
 
-            -- UIManager:scheduleIn(event_auto_stop_after_s, function()
+            -- UIManager:scheduleIn(self.event_auto_stop_after_s, function()
             --     if self.can_stop_on_resume and self:isRunning() then
             --         self:stop()
             --     end
@@ -727,7 +750,7 @@ function Syncthing:registerEventHandlers()
             self:start()
             uiShow(started_message)
 
-            UIManager:scheduleIn(event_auto_stop_after_s, function()
+            UIManager:scheduleIn(self.event_auto_stop_after_s, function()
                 if self.can_stop_on_resume and self:isRunning() then
                     self:stop()
                     hide_dialogs = false
